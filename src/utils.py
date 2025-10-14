@@ -26,18 +26,15 @@ def fetch_and_validate_content(uri: str, selector: str, expected_snippet: str) -
     Returns a tuple: (is_valid: bool, reason: str)
     """
     try:
-        # 1. Fetch Source
         log.info(f"🌐 Fetching URI for verification: {uri}")
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
         response = requests.get(uri, headers=headers, timeout=10)
-        response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
+        response.raise_for_status()
         
-        # 2. Parse and Navigate
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Only supporting CSS selector for this PoC
         if not selector.startswith("css="):
              log.warning("Unsupported selector type. Verification failed.")
              return False, "Unsupported selector type."
@@ -74,14 +71,11 @@ def fetch_and_validate_content(uri: str, selector: str, expected_snippet: str) -
         log.error(f"General error during content validation: {e}")
         return False, f"General error during content validation: {e}"
 
-# --- ABSTRACTED LLM/EMBEDDING UTILITY ---
 def get_query_embedding(query: str) -> List[float]:
     """
     Abstracts the call to an external embedding model (e.g., OpenAI, Cohere).
     For a PoC, we return a mock vector since we cannot run a real model.
     """
-    # In a real app, this returns a 1536-dimension float list for an OpenAI model.
-    # Return a deterministic, but fake, vector
     response = genai.embed_content(
         model=Config.EMBEDDING_MODEL,
         content=query,

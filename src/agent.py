@@ -22,14 +22,11 @@ from config import log, Config
 import google.generativeai as genai  
 from mongodb_client import MongoDBClient
  
-# Configure logging for StrandsAgent (removed basicConfig to avoid overriding global config)
-# The root logger is configured in config.py.
-logging.getLogger("strands.multiagent").setLevel(logging.DEBUG) # Increased to DEBUG
-logging.getLogger("strands.event_loop").setLevel(logging.DEBUG) # Added for more verbose streaming logs
+logging.getLogger("strands.multiagent").setLevel(logging.DEBUG)
+logging.getLogger("strands.event_loop").setLevel(logging.DEBUG)
 logging.getLogger("strands.telemetry.metrics").setLevel(logging.WARNING)
 logging.getLogger("litellm").setLevel(logging.WARNING)
 
-# Helper function from ugvp_protocol/utils.py (assuming it's needed for StrandAgent)
 def get_innermost_exception(e: Exception) -> Exception:
     """Recursively gets the innermost exception from a chain."""
     if hasattr(e, '__cause__') and e.__cause__ is not None:
@@ -38,8 +35,6 @@ def get_innermost_exception(e: Exception) -> Exception:
         return get_innermost_exception(e.args[0])
     return e
 
-# Set agent-specific logging level (removed to be controlled by config.py)
-# log.setLevel(logging.INFO) # This line is removed
 db = MongoDBClient()
 class StrandAgent:
     """
@@ -99,7 +94,7 @@ class StrandAgent:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                response_chunks = [] # Use a list to accumulate chunks
+                response_chunks = []
                 is_first_chunk = True
                 agent_stream = agent.stream_async(user_input)
                 async for event in agent_stream :
@@ -111,11 +106,10 @@ class StrandAgent:
                         delta = event.get("delta", {})
                         if "text" in delta:
                             text_chunk = delta["text"]
-                            response_chunks.append(text_chunk) # Append to list
+                            response_chunks.append(text_chunk)
                             sys.stdout.write(text_chunk)
                             sys.stdout.flush()
-                            log.debug(f"Agent stream chunk: {text_chunk}") # Log each chunk to file
-                            # log.debug(f"Accumulated response_chunks (in loop): {''.join(response_chunks)[:500]}...") # Debug accumulated response
+                            log.debug(f"Agent stream chunk: {text_chunk}")
                     elif event.get("type") == "toolUse":
                         tool_name = event.get("name")
                         tool_input = event.get("input")
@@ -124,17 +118,16 @@ class StrandAgent:
                     elif event.get("type") == "toolOutput":
                         content = event.get("content", [])
                         log.info(f"Agent tool output: {content}")
-                        pass # Suppress tool output for non-interactive run
-                    # Removed break on messageStop to ensure full response accumulation
-                full_response = "".join(response_chunks) # Join chunks at the end
-                log.debug(f"Accumulated response_chunks (final): {response_chunks}") # Log the full list of chunks
-                log.debug(f"Final full_response before return (in StrandAgent.run): {full_response[:500]}...") # Debug final full_response
-                log.info(f"StrandAgent returning full_response: {full_response[:500]}...") # Log final response
+                        pass
+                full_response = "".join(response_chunks)
+                log.debug(f"Accumulated response_chunks (final): {response_chunks}")
+                log.debug(f"Final full_response before return (in StrandAgent.run): {full_response[:500]}...")
+                log.info(f"StrandAgent returning full_response: {full_response[:500]}...")
                 return full_response
             except AttributeError as e:
                 if "'ModelResponseStream' object has no attribute 'usage'" in str(e):
-                    log.warning(f"Caught expected AttributeError in Strands: {e}. This is likely due to a LiteLLM/Strands version incompatibility. Continuing without usage info.")
-                    full_response = "".join(response_chunks) # Ensure full response is captured
+                    log.warning(f"Caught expected AttributeError in Strands: {e}. Continuing without usage info.")
+                    full_response = "".join(response_chunks)
                     log.debug(f"Accumulated response_chunks (final, after AttributeError): {response_chunks}")
                     log.debug(f"Final full_response (after AttributeError): {full_response[:500]}...")
                     return full_response
@@ -143,7 +136,7 @@ class StrandAgent:
                     break
             except Exception as e:
                 log.debug(f"Caught exception type: {type(e)}")
-                innermost_exception = get_innermost_exception(e.__cause__ if e.__cause__ else e) # More robust innermost exception
+                innermost_exception = get_innermost_exception(e.__cause__ if e.__cause__ else e)
                 log.debug(f"Innermost exception type: {type(innermost_exception)}")
                 if isinstance(innermost_exception, litellm.exceptions.RateLimitError):
                     retry_delay = 15
@@ -286,9 +279,9 @@ class GroundingAgent:
                 # For 'agent' strategy, we explicitly create a relationship_metadata for the generated claim
                 # This ensures a VAR entry is generated even if the LLM doesn't explicitly create RMs.
                 relationship_metadata_for_agent = {
-                    "RELATION_ID": f"R{i+1}", # Unique ID for each candidate's claim
-                    "TYPE": "SUMMARY", # Assuming a summary for a single claim
-                    "DEP_CLAIMS": ["C1"], # The single claim generated by the agent
+                    "RELATION_ID": f"R{i+1}",
+                    "TYPE": "SUMMARY",
+                    "DEP_CLAIMS": ["C1"],
                     "SYNTHESIS_PROSE": f"Claim generated by agent for candidate {i+1}",
                     "LOGIC_MODEL": "Agent_Claim_Generation_Model_v1.0",
                     "AUDIT_STATUS": "PENDING",
@@ -308,20 +301,18 @@ class GroundingAgent:
                     log.warning(f"Could not construct grounded text for candidate {i+1}. Raw LLM output: '{generated_text}'")
                     text_only_output = generated_text
                     full_generated_output = generated_text
-            else: # self.strategy == 'llm'
+            else:
                 full_generated_output = generated_text
                 text_only_output = re.sub(r"--- ACG_START ---.*?--- ACG_END ---", "", full_generated_output, flags=re.DOTALL).strip()
 
             log.debug(f"GroundingAgent raw_output before parsing ACG data: {full_generated_output[:500]}...")
             
-            # 3. Verification Phase 1: Atomic Fact Verification (UGVP)
             igms, rms, ssr_from_llm, var_from_llm = self.ugvp.parse_acg_data(full_generated_output)
             verified_igms_count = 0
 
             log.info(f"✅ [Phase 1 Verify] Initiating checks for {len(igms)} claim(s) in candidate {i+1}...")
 
             for igm in igms:
-                # Use find_shi_metadata to retrieve the full SSR entry based on the SHI prefix from the IGM
                 full_metadata = db.find_shi_metadata(igm['shi'])
                 
                 if full_metadata:
@@ -337,7 +328,6 @@ class GroundingAgent:
                         verified_igms_count += 1
                     else:
                         log.warning(f"❌ Claim {igm['claim_id']} from candidate {i+1} failed structural validation. Reason: {reason}. IGNORED.")
-                        # Mark corresponding SSR entry as FAILED
                         final_verified_ssr[full_metadata['SHI']] = {**full_metadata, "Verification_Status": "FAILED"}
                 else:
                     log.error(f"❌ Claim {igm['claim_id']} from candidate {i+1} failed lookup (SHI prefix: {igm['shi']} not found in DB).")
@@ -349,7 +339,6 @@ class GroundingAgent:
                 if var_entry:
                     all_deps_verified = True
                     for dep_claim_id in rm['dep_claims']:
-                        # Find the SHI for the dependency claim
                         dep_shi = next((igm['shi'] for igm in igms if igm['claim_id'] == dep_claim_id), None)
                         if not dep_shi or final_verified_ssr.get(dep_shi, {}).get("Verification_Status") != "VERIFIED":
                             all_deps_verified = False
@@ -357,8 +346,6 @@ class GroundingAgent:
                     
                     if all_deps_verified:
                         logic_model_name = var_entry.get('LOGIC_MODEL', 'Default_Verification_Model_v1.0')
-                        # Placeholder for actual logic model invocation
-                        # For now, we assume VERIFIED_LOGIC if all dependencies are verified.
                         var_entry["AUDIT_STATUS"] = "VERIFIED_LOGIC" 
                         log.info(f"Logic Model '{logic_model_name}' invoked for RM {rm['relationship_id']}. Status: {var_entry['AUDIT_STATUS']}")
                     else:
@@ -373,7 +360,7 @@ class GroundingAgent:
             else:
                 log.warning(f"No claims verified for candidate {i+1}. Discarding its output.")
             
-            log.debug(f"--- End Interaction (Candidate {i+1}) ---\n")
+            log.debug(f"--- End Interaction (Candidate {i+1}) ---")
 
         # 4. Final Synthesis from Verified Claims
         if not verified_claims_texts:
@@ -383,23 +370,18 @@ class GroundingAgent:
         # Combine all verified claims into a single context for final synthesis
         combined_verified_context = "\n\n".join(verified_claims_texts)
 
-        # Create a new prompt for the final synthesis agent
-        # Temporarily simplify the synthesis prompt for debugging
         synthesis_prompt = (
             f"Synthesize an answer to the query: '{query}' based on the following verified information:\n\n"
             f"Verified Information:\n---\n{combined_verified_context}\n---\n\n"
             f"Provide the synthesized answer now."
         )
 
-        # Use google.generativeai directly for synthesis, bypassing StrandAgent
         log.info("Attempting final synthesis directly with google.generativeai...")
         try:
             genai.configure(api_key=Config.GOOGLE_API_KEY)
-            # Use a generative model for synthesis, not an embedding model
             synthesis_model = genai.GenerativeModel("gemini-2.5-flash") 
             
-            # Generate content
-            response = await synthesis_model.generate_content_async(synthesis_prompt) # Use async version
+            response = await synthesis_model.generate_content_async(synthesis_prompt)
             final_synthesized_answer = response.text
             
             log.debug(f"Final synthesized answer before ACG assembly: {final_synthesized_answer}")
@@ -408,21 +390,16 @@ class GroundingAgent:
         except Exception as e:
             log.error(f"Error during direct synthesis with google.generativeai: {e}", exc_info=True)
             final_synthesized_answer = "Error: Could not generate final synthesized answer."
-        # For the final synthesized answer, create a top-level SUMMARY relationship
-        # Collect all claim_ids from the verified SSR entries that contributed to the synthesis
         all_verified_claim_ids = [igm['claim_id'] for igm_list, _, _, _ in [self.ugvp.parse_acg_data(text) for text in verified_claims_texts] for igm in igm_list]
 
-        # Dynamically determine the relationship type for final synthesis
-        # This is a placeholder for a more sophisticated logic model that would analyze the synthesis
-        # For now, if there's more than one claim, it's a SUMMARY. If one, it's a direct INFERENCE.
         final_synthesis_rel_type = "SUMMARY" if len(all_verified_claim_ids) > 1 else "INFERENCE"
 
         final_synthesis_relationship_metadata = {
-            "RELATION_ID": f"R_FINAL_SYNTHESIS_{uuid.uuid4().hex[:8]}", # Unique ID for final synthesis
+            "RELATION_ID": f"R_FINAL_SYNTHESIS_{uuid.uuid4().hex[:8]}",
             "TYPE": final_synthesis_rel_type,
-            "DEP_CLAIMS": list(set(all_verified_claim_ids)), # Ensure unique claim IDs
+            "DEP_CLAIMS": list(set(all_verified_claim_ids)),
             "SYNTHESIS_PROSE": f"Final synthesized answer to query: '{query}'",
-            "LOGIC_MODEL": "ACG_Final_Synthesizer_Model_v1.0", # Specific model for final synthesis
+            "LOGIC_MODEL": "ACG_Final_Synthesizer_Model_v1.0",
             "AUDIT_STATUS": "PENDING",
             "TIMESTAMP": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         }
@@ -430,23 +407,21 @@ class GroundingAgent:
         # Add this final synthesis VAR entry to the overall final_verified_var
         final_verified_var[final_synthesis_relationship_metadata['RELATION_ID']] = {
             **final_synthesis_relationship_metadata,
-            "AUDIT_STATUS": "VERIFIED_LOGIC" # Assuming the synthesis logic is sound for PoC
+            "AUDIT_STATUS": "VERIFIED_LOGIC"
         }
 
-        # 5. Final Compilation and Hook
         self._pre_response_hook()
 
         # The final_synthesized_answer itself doesn't contain ACG markers,
         # so we pass it directly and the assemble_final_output will add the ACG block.
         final_document = self.ugvp.assemble_final_output(final_synthesized_answer, final_verified_ssr, final_verified_var)
 
-        log.info(f"Final GroundingAgent response: {final_document}") # Log the final document
+        log.info(f"Final GroundingAgent response: {final_document}")
         return final_document
 
-# --- Terminal Invocation ---
 if __name__ == "__main__":
     
-    async def main(): # Define an async main function
+    async def main():
         parser = argparse.ArgumentParser(description="Run the UGVP Grounding Agent.")
         parser.add_argument(
             '--strategy', 
@@ -458,7 +433,6 @@ if __name__ == "__main__":
         args = parser.parse_args()
 
         try:
-            # 1. Initialize Core Components
             ugvp_instance = UGVPProtocol()
             agent = GroundingAgent(ugvp_instance, strategy=args.strategy)
 
@@ -476,7 +450,7 @@ if __name__ == "__main__":
             
             while True:
                 user_input = input("\n[USER]: ")
-                log.info(f"[USER]: {user_input}") # Log user input
+                log.info(f"[USER]: {user_input}")
                 
                 if user_input.lower() in ['exit', 'q']:
                     log.info("Exiting agent. Goodbye.")
@@ -486,8 +460,8 @@ if __name__ == "__main__":
                     continue
                 
                 try:
-                    response = await agent.generate_and_verify(user_input) # Await the async method
-                    print("\n[AGENT RESPONSE]:") # Keep console output for final response
+                    response = await agent.generate_and_verify(user_input)
+                    print("\n[AGENT RESPONSE]:")
                     print(response)
                     log.info(f"[AGENT RESPONSE]: {response}")
                 except Exception as e:
@@ -497,4 +471,4 @@ if __name__ == "__main__":
             log.critical(f"Agent failed to start/run due to critical error: {e}", exc_info=True)
             sys.exit(1)
 
-    asyncio.run(main()) # Run the async main function
+    asyncio.run(main())

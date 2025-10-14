@@ -5,13 +5,9 @@ from typing import Dict, List, Optional, Tuple
 
 from config import Config, log
 
-# Import ObjectId from pymongo.bson.objectid if it's used in the project
-# Assuming ObjectId is used for database IDs, which is common with MongoDB
 try:
     from bson.objectid import ObjectId
 except ImportError:
-    # Fallback for environments where pymongo might not be installed or ObjectId is not directly accessible
-    # This might happen if the ObjectId is coming from a different ORM or custom class
     class ObjectId:
         def __init__(self, oid):
             self.oid = oid
@@ -151,7 +147,7 @@ class UGVPProtocol:
             rf'([A-Fa-f0-9]{{8,{Config.SHI_PREFIX_LENGTH}}})' # SHI prefix, min 8, max SHI_PREFIX_LENGTH
             rf'{escaped_claim_sep}'            # claim separator again
             rf'([^{claim_end}]+?)'             # capture text until claim end delimiter (non-greedy)
-            rf'{escaped_claim_end}'            # claim end delimiter
+            rf'{escaped_claim_end}'
         )
 
         # Regex for RMs
@@ -165,24 +161,16 @@ class UGVPProtocol:
             rf'{escaped_rel_end}'              # relation end delimiter
         )
 
-        log.debug(f"parse_acg_data received original_text (full):\n{original_text}") # Log full text for debugging
-        
         igms = []
-        # Extract claim_context for each IGM by finding the text immediately preceding it.
-        # This requires iterating through matches and extracting the text between them or before the first.
-        
-        # First, find all IGM matches
         all_igm_matches = list(re.finditer(igm_pattern, original_text, re.IGNORECASE))
         
         # Iterate through matches to extract claim_context
         for i, match in enumerate(all_igm_matches):
             start_index = 0
             if i > 0:
-                # The claim_context for the current IGM is the text between the previous IGM and the current one.
                 prev_match_end = all_igm_matches[i-1].end()
                 claim_text = original_text[prev_match_end:match.start()].strip()
             else:
-                # For the first IGM, the claim_context is the text from the beginning of the string to its start.
                 claim_text = original_text[0:match.start()].strip()
 
             igms.append({
@@ -200,16 +188,13 @@ class UGVPProtocol:
                 "type": match.group(2),
                 "dep_claims": match.group(3).split(',')
             })
-        log.debug(f"parse_acg_data found RMs: {rms}")
 
-        # Extract the ACG block (containing both SSR and VAR)
         ssr_dict = None
         var_dict = None
         acg_match = re.search(r"--- ACG_START ---\n(.*?)\n--- ACG_END ---", original_text, re.DOTALL)
         if acg_match:
             try:
                 acg_json_str = acg_match.group(1)
-                log.debug(f"Raw ACG JSON string extracted: {acg_json_str[:500]}...")
                 acg_data = json.loads(acg_json_str)
                 log.debug(f"Parsed ACG data (full): {json.dumps(acg_data, indent=2)}") # Added detailed logging
                 

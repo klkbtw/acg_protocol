@@ -27,7 +27,7 @@ class MongoDBClient:
         
         try:
             self.client = MongoClient(self.config['uri'], serverSelectionTimeoutMS=5000)
-            self.client.admin.command('ping') # Verify connection
+            self.client.admin.command('ping')
             self.db = self.client[self.config['db_name']]
             self.ssr_collection = self.db[Config.MONGO_SSR_COLLECTION]
             self.rag_collection = self.db[Config.MONGO_RAG_COLLECTION]
@@ -40,7 +40,7 @@ class MongoDBClient:
     def vector_search(self, query_embedding: List[float], limit: int = 2, min_score: float = 0.85, shi_filter: Optional[str] = None) -> List[Dict]:
         """
         Performs a vector similarity search on the RAG collection.
-        This assumes a vector index named 'vector_index' is set up in MongoDB Atlas.
+        This assumes a vector index named 'embedding' is set up in MongoDB Atlas.
         """
         if not self.client: return []
         
@@ -143,7 +143,7 @@ class MongoDBClient:
             "metadata": metadata,
             "timestamp": datetime.now()
         }
-        self.rag_collection.update_one( # Use rag_collection here
+        self.rag_collection.update_one(
             {"shi": shi, "chunk_id": chunk_id},
             {"$set": document},
             upsert=True
@@ -157,7 +157,7 @@ class MongoDBClient:
         :param chunk_id: Chunk identifier.
         :return: The chunk document or None if not found.
         """
-        return self.rag_collection.find_one({"shi": shi, "chunk_id": chunk_id}) # Use rag_collection here
+        return self.rag_collection.find_one({"shi": shi, "chunk_id": chunk_id})
 
     def retrieve_chunks_by_shi(self, shi: str) -> List[Dict[str, Any]]:
         """
@@ -165,7 +165,7 @@ class MongoDBClient:
         :param shi: Source Hash Identity.
         :return: A list of chunk documents.
         """
-        return list(self.rag_collection.find({"shi": shi}).sort("chunk_id", 1)) # Use rag_collection here
+        return list(self.rag_collection.find({"shi": shi}).sort("chunk_id", 1))
 
     def close(self):
         """Closes the MongoDB connection."""
@@ -191,21 +191,20 @@ def store_source_chunks(mongo_client: MongoDBClient, shi: str, chunks_to_store: 
         stripped_chunk_content = chunk_content.strip()
         
         if not stripped_chunk_content:
-            continue # Skip empty chunks
+            continue
 
         try:
             embedding_response = embed_content_func(
-                model=Config.EMBEDDING_MODEL, # Use Config.EMBEDDING_MODEL
+                model=Config.EMBEDDING_MODEL,
                 content=stripped_chunk_content,
-                task_type="RETRIEVAL_DOCUMENT", # Specify task type for document embedding
-                output_dimensionality=Config.EMBEDDING_DIMENSION # Use Config.EMBEDDING_DIMENSION
+                task_type="RETRIEVAL_DOCUMENT",
+                output_dimensionality=Config.EMBEDDING_DIMENSION
             )
             embedding = embedding_response['embedding']
         except Exception as e:
             log.error(f"Failed to generate embedding for chunk {chunk_id} of SHI {shi}: {e}")
-            embedding = [] # Store an empty list or handle error as appropriate
+            embedding = []
         
-        # Add loc_selector to metadata
         chunk_metadata = {**metadata, "loc": loc_selector}
             
         mongo_client.store_chunk(shi, chunk_id, stripped_chunk_content, embedding, chunk_metadata)

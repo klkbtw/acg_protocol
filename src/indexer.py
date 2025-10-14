@@ -3,8 +3,6 @@ import re
 import requests
 from bs4 import BeautifulSoup
 
-# Add the parent directory to the Python path to allow importing ugvp_protocol
-# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils import generate_shi
 from mongodb_client import MongoDBClient, store_source_chunks
 
@@ -51,18 +49,17 @@ def index_url(args):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
         response = requests.get(url, headers=headers)
-        response.raise_for_status()  # Raise an exception for HTTP errors
+        response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         
         source_uri = url
-        source_version = "1.0" # Placeholder, consider how to derive this dynamically if needed
+        source_version = "1.0"
 
         shi = generate_shi(source_uri, source_version)
         
-        mongo_client = MongoDBClient() # Instantiate the client
+        mongo_client = MongoDBClient()
 
         all_sentences_data = []
-        # Find all text-containing elements that are likely to be content
         for element in soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'blockquote']):
             # Skip elements that are likely citation notes
             if element.has_attr('id') and element['id'].startswith('cite_note-'):
@@ -70,8 +67,6 @@ def index_url(args):
             
             text_content = element.get_text(separator=' ', strip=True)
             if text_content:
-                # More robust sentence splitting regex
-                # This regex attempts to split sentences while avoiding splitting on abbreviations (e.g., "Mr. Smith")
                 sentences_from_element = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|!)\s+', text_content)
                 for sentence in sentences_from_element:
                     if sentence.strip():
@@ -102,7 +97,7 @@ def index_url(args):
                     "metadata": {"uri": url, "loc": current_chunk_loc_selector}
                 })
                 current_chunk_sentences = []
-                current_chunk_loc_selector = None # Reset for next chunk
+                current_chunk_loc_selector = None
 
         # Add any remaining sentences as the last chunk
         if current_chunk_sentences:
@@ -110,7 +105,7 @@ def index_url(args):
             chunks_to_store.append({
                 "content": chunk_content,
                 "chunk_id": f"chunk_{len(chunks_to_store) + 1}",
-                "loc_selector": current_chunk_loc_selector, # Use the selector from the first sentence in this remainder chunk
+                "loc_selector": current_chunk_loc_selector,
                 "metadata": {"uri": url, "loc": current_chunk_loc_selector}
             })
 
