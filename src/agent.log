@@ -1,0 +1,5 @@
+2025-10-14 16:56:39,059 - INFO - UGVP_POC - 💾 [DB] Connected to MongoDB: ugvp
+2025-10-14 16:56:39,832 - DEBUG - UGVP_POC - Successfully stored/updated chunk chunk_1 for SHI 7fb5873585afa4dbb250e8c384f526124dd2388715809456da3ac7dddac6d9fe in MongoDB.
+2025-10-14 16:56:42,380 - DEBUG - UGVP_POC - Successfully stored/updated chunk chunk_2 for SHI 7fb5873585afa4dbb250e8c384f526124dd2388715809456da3ac7dddac6d9fe in MongoDB.
+2025-10-14 16:56:44,834 - DEBUG - UGVP_POC - Successfully stored/updated chunk chunk_3 for SHI 7fb5873585afa4dbb250e8c384f526124dd2388715809456da3ac7dddac6d9fe in MongoDB.
+2025-10-14 16:56:45,046 - INFO - UGVP_POC - MongoDB connection closed.
