@@ -1,4 +1,4 @@
-# Comprehensive Veracity Protocol (ACG) Canvas
+# Audited Context Generation (ACG)
 
 The ACG is the unified standard that governs both the **grounding of atomic facts** (UGVP Layer) and the **validation of logical synthesis** (RSVP Layer). It ensures that all generated output is auditable for both truth and reasoning integrity.
 
