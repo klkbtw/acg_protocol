@@ -12,9 +12,7 @@ from ugvp_protocol import UGVPProtocol
 from utils import get_query_embedding, fetch_and_validate_content
 from config import log
 
-# Dependencies for StrandAgent
 from strands import Agent as StrandsAgent
-from strands.tools.mcp import MCPClient
 from strands.models.litellm import LiteLLMModel
 from strands.session.file_session_manager import FileSessionManager
 import litellm
@@ -22,10 +20,10 @@ from config import log, Config
 import google.generativeai as genai  
 from mongodb_client import MongoDBClient
  
-logging.getLogger("strands.multiagent").setLevel(logging.DEBUG)
-logging.getLogger("strands.event_loop").setLevel(logging.DEBUG)
-logging.getLogger("strands.telemetry.metrics").setLevel(logging.WARNING)
-logging.getLogger("litellm").setLevel(logging.WARNING)
+logging.getLogger("strands.multiagent").setLevel(logging.ERROR)
+logging.getLogger("strands.event_loop").setLevel(logging.ERROR)
+logging.getLogger("strands.telemetry.metrics").setLevel(logging.ERROR)
+logging.getLogger("litellm").setLevel(logging.ERROR)
 
 def get_innermost_exception(e: Exception) -> Exception:
     """Recursively gets the innermost exception from a chain."""
@@ -61,7 +59,19 @@ class StrandAgent:
         )
         self.base_system_prompt = system_prompt
         self.tools = tools if tools is not None else []
-        log.info(f"StrandAgent '{self.name}' initialized with LiteLLMModel '{model_id}'.")
+
+    async def close(self):
+        """
+        Closes any underlying resources, such as LiteLLM client sessions.
+        """
+        if hasattr(self.model, 'aclose') and callable(self.model.aclose):
+            await self.model.aclose()
+        elif hasattr(self.model, 'client') and hasattr(self.model.client, 'aclose'):
+            await self.model.client.aclose()
+        elif hasattr(litellm, 'client') and hasattr(litellm.client, 'aclose'):
+            await litellm.client.aclose()
+        else:
+            pass
 
     async def run(self, user_input: str, override_system_prompt: Optional[str] = None) -> str:
         """
@@ -85,59 +95,39 @@ class StrandAgent:
             model=self.model,
             tools=self.tools,
             system_prompt=current_system_prompt,
-            session_manager=self.session_manager
+            # session_manager=self.session_manager
         )
         if not user_input.strip():
-            log.warning("No input provided to the Strand Agent.")
             return "No input provided to the Strand Agent."
         
         max_retries = 3
         for attempt in range(max_retries):
             try:
+                # Disable streaming by collecting all chunks before returning
                 response_chunks = []
-                is_first_chunk = True
                 agent_stream = agent.stream_async(user_input)
-                async for event in agent_stream :
+                async for event in agent_stream:
                     if event.get("type") == "contentBlockDelta":
-                        if is_first_chunk:
-                            sys.stdout.write("Agent: ")
-                            sys.stdout.flush()
-                            is_first_chunk = False
                         delta = event.get("delta", {})
                         if "text" in delta:
                             text_chunk = delta["text"]
                             response_chunks.append(text_chunk)
-                            sys.stdout.write(text_chunk)
-                            sys.stdout.flush()
-                            log.debug(f"Agent stream chunk: {text_chunk}")
                     elif event.get("type") == "toolUse":
-                        tool_name = event.get("name")
-                        tool_input = event.get("input")
-                        log.info(f"Agent using tool: {tool_name} with input: {tool_input}")
-                        is_first_chunk = True
-                    elif event.get("type") == "toolOutput":
-                        content = event.get("content", [])
-                        log.info(f"Agent tool output: {content}")
                         pass
+                    elif event.get("type") == "toolOutput":
+                        pass
+                
                 full_response = "".join(response_chunks)
-                log.debug(f"Accumulated response_chunks (final): {response_chunks}")
-                log.debug(f"Final full_response before return (in StrandAgent.run): {full_response[:500]}...")
-                log.info(f"StrandAgent returning full_response: {full_response[:500]}...")
                 return full_response
             except AttributeError as e:
                 if "'ModelResponseStream' object has no attribute 'usage'" in str(e):
-                    log.warning(f"Caught expected AttributeError in Strands: {e}. Continuing without usage info.")
                     full_response = "".join(response_chunks)
-                    log.debug(f"Accumulated response_chunks (final, after AttributeError): {response_chunks}")
-                    log.debug(f"Final full_response (after AttributeError): {full_response[:500]}...")
                     return full_response
                 else:
                     log.error(f"An unexpected AttributeError occurred: {e}", exc_info=True)
                     break
             except Exception as e:
-                log.debug(f"Caught exception type: {type(e)}")
                 innermost_exception = get_innermost_exception(e.__cause__ if e.__cause__ else e)
-                log.debug(f"Innermost exception type: {type(innermost_exception)}")
                 if isinstance(innermost_exception, litellm.exceptions.RateLimitError):
                     retry_delay = 15
                     try:
@@ -146,10 +136,10 @@ class StrandAgent:
                             retry_delay = int(match.group(1)) + 1
                     except Exception:
                         pass
-                    log.warning(f"Rate limit hit: {innermost_exception}. Retrying in {retry_delay} seconds...")
+                    log.warning(f"Rate limit hit. Retrying in {retry_delay} seconds...")
                     time.sleep(retry_delay)
                 elif isinstance(e, (litellm.ServiceUnavailableError, litellm.exceptions.MidStreamFallbackError)):
-                    log.warning(f"Service unavailable error: {e}. Retrying in 5 seconds...")
+                    log.warning(f"Service unavailable error. Retrying in 5 seconds...")
                     time.sleep(5)
                 else:
                     log.error(f"An unexpected error occurred: {e}", exc_info=True)
@@ -174,16 +164,12 @@ class GroundingAgent:
         """
         self.ugvp = ugvp
         self.strategy = strategy
-        self.ssr_cache: Dict[str, dict] = {} # Caches verified SSR entries for final assembly
+        self.ssr_cache: Dict[str, dict] = {}
         if self.strategy not in ['agent', 'llm']:
             raise ValueError("Strategy must be either 'agent' or 'llm'.")
-        log.info(f"GroundingAgent initialized with strategy: '{self.strategy}'")
 
     def _pre_response_hook(self):
-        """
-        A production hook for auditing and logging before the final response is issued.
-        """
-        log.info("⚙️ HOOK: Final integrity review complete. Response ready for output.")
+        pass
 
     def _prepare_claim_generation_prompt(self, query: str, context: Dict[str, Any]) -> str:
         """Prepares a prompt that asks the LLM to generate the claim text."""
@@ -233,10 +219,10 @@ class GroundingAgent:
         """
         # 1. Retrieval (RAG)
         query_embedding = get_query_embedding(query)
-        search_results = db.vector_search(query_embedding, limit=2, min_score=0.85)
+        search_results = db.vector_search(query_embedding, limit=3, min_score=0.85)
         log.info(f"🔍 [RAG] Vector search returned {len(search_results)} candidate(s).")
         if not search_results:
-            return "❌ Agent unable to retrieve sftrong, unique grounding context. Halting to prevent hallucination."
+            return "❌ Agent unable to retrieve strong, unique grounding context. Halting to prevent hallucination.", []
 
         verified_claims_texts = []
         final_verified_ssr: Dict[str, dict] = {}
@@ -264,13 +250,11 @@ class GroundingAgent:
             else:
                 raise RuntimeError("Invalid strategy configured.")
 
-            log.debug(f"Strand Agent Prompt: {strand_prompt}\n")
-
             strand_agent = StrandAgent(name=f"ACG_Generator_{i+1}", system_prompt=system_prompt)
-            generated_text = await strand_agent.run(strand_prompt)
-
-            full_generated_output = ""
-            text_only_output = ""
+            try:
+                generated_text = await strand_agent.run(strand_prompt)
+            finally:
+                await strand_agent.close() # Ensure the agent's resources are closed
 
             full_generated_output = ""
             text_only_output = ""
@@ -304,8 +288,6 @@ class GroundingAgent:
             else:
                 full_generated_output = generated_text
                 text_only_output = re.sub(r"--- ACG_START ---.*?--- ACG_END ---", "", full_generated_output, flags=re.DOTALL).strip()
-
-            log.debug(f"GroundingAgent raw_output before parsing ACG data: {full_generated_output[:500]}...")
             
             igms, rms, ssr_from_llm, var_from_llm = self.ugvp.parse_acg_data(full_generated_output)
             verified_igms_count = 0
@@ -313,24 +295,39 @@ class GroundingAgent:
             log.info(f"✅ [Phase 1 Verify] Initiating checks for {len(igms)} claim(s) in candidate {i+1}...")
 
             for igm in igms:
-                full_metadata = db.find_shi_metadata(igm['shi'])
+                # Use the source_uri and full SHI from the current candidate's context directly for verification
+                # The igm['loc'] already contains the CSS selector part.
+                is_valid, reason = fetch_and_validate_content(
+                    uri=context['source_uri'], # Use source_uri from the current context
+                    selector=f"css={igm['loc']}",
+                    expected_snippet=igm['claim_context']
+                )
                 
-                if full_metadata:
-                    is_valid, reason = fetch_and_validate_content(
-                        uri=full_metadata['Canonical_URI'],
-                        selector=f"css={igm['loc']}",
-                        expected_snippet=igm['claim_context']
-                    )
-                    if is_valid:
-                        final_ssr_entry = {**full_metadata, "Verification_Status": "VERIFIED"}
-                        db.insert_ssr_entry(final_ssr_entry)
-                        final_verified_ssr[final_ssr_entry['SHI']] = final_ssr_entry
-                        verified_igms_count += 1
-                    else:
-                        log.warning(f"❌ Claim {igm['claim_id']} from candidate {i+1} failed structural validation. Reason: {reason}. IGNORED.")
-                        final_verified_ssr[full_metadata['SHI']] = {**full_metadata, "Verification_Status": "FAILED"}
+                # Create the SSR entry using information from the context and the igm
+                # This entry will be inserted into the DB if valid, or tracked internally if failed.
+                current_ssr_entry = {
+                    "SHI": context['shi'], # Full SHI from context
+                    "Type": "Web Article", # Assuming type for now, could be derived from context metadata
+                    "Canonical_URI": context['source_uri'],
+                    "Location_Type": "CSS_Selector",
+                    "Loc_Selector": igm['loc'],
+                    "Chunk_ID": context['chunk_id'], # Chunk_ID from context
+                    "Verification_Status": "PENDING" # Initial status
+                }
+
+                # Use a composite key (SHI-Chunk_ID) for final_verified_ssr to avoid overwriting
+                ssr_key = f"{current_ssr_entry['SHI']}-{current_ssr_entry['Chunk_ID']}"
+
+                if is_valid:
+                    current_ssr_entry["Verification_Status"] = "VERIFIED"
+                    db.insert_ssr_entry(current_ssr_entry) # Insert into DB
+                    final_verified_ssr[ssr_key] = current_ssr_entry
+                    verified_igms_count += 1
                 else:
-                    log.error(f"❌ Claim {igm['claim_id']} from candidate {i+1} failed lookup (SHI prefix: {igm['shi']} not found in DB).")
+                    current_ssr_entry["Verification_Status"] = "FAILED"
+                    log.warning(f"❌ Claim {igm['claim_id']} from candidate {i+1} failed structural validation. Reason: {reason}. IGNORED.")
+                    # Even if validation fails, we track the failed SSR entry internally for the final ACG block
+                    final_verified_ssr[ssr_key] = current_ssr_entry
             
             # Phase 2: Synthesis Verification (RSVP)
             log.info(f"✅ [Phase 2 Verify] Initiating checks for {len(rms)} relationship(s) in candidate {i+1}...")
@@ -339,9 +336,24 @@ class GroundingAgent:
                 if var_entry:
                     all_deps_verified = True
                     for dep_claim_id in rm['dep_claims']:
-                        dep_shi = next((igm['shi'] for igm in igms if igm['claim_id'] == dep_claim_id), None)
-                        if not dep_shi or final_verified_ssr.get(dep_shi, {}).get("Verification_Status") != "VERIFIED":
+                        # Need to find the full SHI and Chunk_ID for the dependent claim
+                        # This is complex as igms only has SHI prefix and loc.
+                        # For now, we'll assume if the SHI prefix is in final_verified_ssr, it's good enough
+                        # A more robust solution would involve mapping claim_id to full SHI and Chunk_ID
+                        dep_shi_prefix = next((igm['shi'] for igm in igms if igm['claim_id'] == dep_claim_id), None)
+                        if dep_shi_prefix:
+                            # Check if any SSR entry with this SHI prefix was verified
+                            found_verified_dep = False
+                            for ssr_key, ssr_val in final_verified_ssr.items():
+                                if ssr_key.startswith(dep_shi_prefix) and ssr_val.get("Verification_Status") == "VERIFIED":
+                                    found_verified_dep = True
+                                    break
+                            if not found_verified_dep:
+                                all_deps_verified = False
+                        else:
                             all_deps_verified = False
+                            
+                        if not all_deps_verified: # Break early if any dependency is not verified
                             break
                     
                     if all_deps_verified:
@@ -355,28 +367,29 @@ class GroundingAgent:
                 else:
                     log.error(f"❌ Relationship {rm['relationship_id']} from candidate {i+1} failed lookup (RM not found in LLM's VAR).")
 
-            if verified_igms_count > 0:
-                verified_claims_texts.append(text_only_output)
-            else:
-                log.warning(f"No claims verified for candidate {i+1}. Discarding its output.")
-            
-            log.debug(f"--- End Interaction (Candidate {i+1}) ---")
-
         # 4. Final Synthesis from Verified Claims
+        # Populate verified_claims_texts AFTER all candidates have been processed
+        for ssr_key, shi_entry in final_verified_ssr.items():
+            if shi_entry.get("Verification_Status") == "VERIFIED":
+                chunk_content = db.retrieve_chunk(shi_entry['SHI'], shi_entry['Chunk_ID'])
+                if chunk_content and chunk_content['content'] not in verified_claims_texts:
+                    verified_claims_texts.append(chunk_content['content'])
+
         if not verified_claims_texts:
             log.error("Agent generated content, but no claims could be successfully verified against the sources.")
-            return "❌ Agent generated content, but no claims could be successfully verified against the sources."
+            # Return an empty list for verified_claims_texts if no claims are verified
+            return "❌ Agent generated content, but no claims could be successfully verified against the sources.", []
 
         # Combine all verified claims into a single context for final synthesis
         combined_verified_context = "\n\n".join(verified_claims_texts)
 
         synthesis_prompt = (
-            f"Synthesize an answer to the query: '{query}' based on the following verified information:\n\n"
+            f"Synthesize a concise, natural language answer to the query: '{query}' based on the following verified information. "
+            f"Do NOT include any grounding markers (e.g., [C1:...], (R1:...)) or any other special formatting in your final answer.\n\n"
             f"Verified Information:\n---\n{combined_verified_context}\n---\n\n"
             f"Provide the synthesized answer now."
         )
 
-        log.info("Attempting final synthesis directly with google.generativeai...")
         try:
             genai.configure(api_key=Config.GOOGLE_API_KEY)
             synthesis_model = genai.GenerativeModel("gemini-2.5-flash") 
@@ -385,19 +398,25 @@ class GroundingAgent:
             final_synthesized_answer = response.text
             
             log.debug(f"Final synthesized answer before ACG assembly: {final_synthesized_answer}")
-            print(f"\n--- DEBUG: Final synthesized answer content ---\n{final_synthesized_answer}\n--- END DEBUG ---\n")
             
         except Exception as e:
             log.error(f"Error during direct synthesis with google.generativeai: {e}", exc_info=True)
             final_synthesized_answer = "Error: Could not generate final synthesized answer."
-        all_verified_claim_ids = [igm['claim_id'] for igm_list, _, _, _ in [self.ugvp.parse_acg_data(text) for text in verified_claims_texts] for igm in igm_list]
+        
+        # Extract claim IDs from the verified_claims_texts for the final synthesis VAR entry
+        all_verified_claim_ids = []
+        for text in verified_claims_texts:
+            igms_from_text, _, _, _ = self.ugvp.parse_acg_data(text)
+            if igms_from_text:
+                all_verified_claim_ids.extend([igm['claim_id'] for igm in igms_from_text])
+        all_verified_claim_ids = list(set(all_verified_claim_ids)) # Remove duplicates
 
         final_synthesis_rel_type = "SUMMARY" if len(all_verified_claim_ids) > 1 else "INFERENCE"
 
         final_synthesis_relationship_metadata = {
             "RELATION_ID": f"R_FINAL_SYNTHESIS_{uuid.uuid4().hex[:8]}",
             "TYPE": final_synthesis_rel_type,
-            "DEP_CLAIMS": list(set(all_verified_claim_ids)),
+            "DEP_CLAIMS": all_verified_claim_ids,
             "SYNTHESIS_PROSE": f"Final synthesized answer to query: '{query}'",
             "LOGIC_MODEL": "ACG_Final_Synthesizer_Model_v1.0",
             "AUDIT_STATUS": "PENDING",
@@ -417,7 +436,7 @@ class GroundingAgent:
         final_document = self.ugvp.assemble_final_output(final_synthesized_answer, final_verified_ssr, final_verified_var)
 
         log.info(f"Final GroundingAgent response: {final_document}")
-        return final_document
+        return final_document, verified_claims_texts # Return both the final document and the verified contexts
 
 if __name__ == "__main__":
     
@@ -448,25 +467,34 @@ if __name__ == "__main__":
 
             log.info("Enter your query (e.g., 'What is the latest climate data?'). Type 'exit' to quit.")
             
-            while True:
-                user_input = input("\n[USER]: ")
-                log.info(f"[USER]: {user_input}")
-                
-                if user_input.lower() in ['exit', 'q']:
-                    log.info("Exiting agent. Goodbye.")
-                    break
+            try:
+                while True:
+                    user_input = input("\n[USER]: ")
                     
-                if not user_input.strip():
-                    continue
-                
+                    if user_input.lower() in ['exit', 'q']:
+                        break
+                        
+                    if not user_input.strip():
+                        continue
+                    
+                    try:
+                        response = await agent.generate_and_verify(user_input)
+                        log.info(f"[AGENT RESPONSE]: {response}")
+                    except Exception as e:
+                        log.error(f"An error occurred during generation/verification: {e}", exc_info=True)
+            finally:
+                # Ensure agent and database resources are closed on exit
+                if db:
+                    db.close() 
                 try:
-                    response = await agent.generate_and_verify(user_input)
-                    print("\n[AGENT RESPONSE]:")
-                    print(response)
-                    log.info(f"[AGENT RESPONSE]: {response}")
+                    import litellm
+                    if hasattr(litellm, 'finish') and callable(litellm.finish):
+                        await litellm.finish()
+                except ImportError:
+                    pass
                 except Exception as e:
-                    log.error(f"An error occurred during generation/verification: {e}", exc_info=True)
-                    print("\n[AGENT ERROR]: Sorry, an internal error occurred. Please try another query.")
+                    log.error(f"Error calling litellm.finish() during agent cleanup: {e}", exc_info=True)
+
         except Exception as e:
             log.critical(f"Agent failed to start/run due to critical error: {e}", exc_info=True)
             sys.exit(1)

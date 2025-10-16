@@ -89,7 +89,8 @@ class UGVPProtocol:
             "Type": "Web Article",
             "Canonical_URI": source_metadata['source_uri'],
             "Location_Type": "CSS_Selector",
-            "Loc_Selector": loc
+            "Loc_Selector": loc,
+            "Chunk_ID": source_metadata['chunk_id'] # Add chunk_id to SSR entry
             # Note: Final verification status (VERIFIED/CONTRADICTED) is added later
         }
 
@@ -199,7 +200,8 @@ class UGVPProtocol:
                 log.debug(f"Parsed ACG data (full): {json.dumps(acg_data, indent=2)}") # Added detailed logging
                 
                 if 'SSR' in acg_data and isinstance(acg_data['SSR'], list):
-                    ssr_dict = {item['SHI']: item for item in acg_data['SSR']}
+                    # Use a composite key (SHI-Chunk_ID) for ssr_dict to ensure uniqueness
+                    ssr_dict = {f"{item['SHI']}-{item['Chunk_ID']}": item for item in acg_data['SSR']}
                 if 'VAR' in acg_data and isinstance(acg_data['VAR'], list):
                     var_dict = {item['RELATION_ID']: item for item in acg_data['VAR']}
             except json.JSONDecodeError as e:
